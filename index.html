@@ -44,6 +44,13 @@
     .animate-toast {
       animation: float-up 3s forwards ease-out;
     }
+    @keyframes highlight-glow {
+      0%, 100% { box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
+      50% { box-shadow: 0 0 30px rgba(56, 189, 248, 0.9); }
+    }
+    .highlight-step {
+      animation: highlight-glow 1.5s infinite;
+    }
     ::-webkit-scrollbar {
       width: 6px;
       height: 6px;
@@ -263,7 +270,7 @@
     ];
 
     // =========================================================================
-    // 2. SCENARIO PACKS (DUAL INDUSTRY)
+    // 2. SCENARIO PACKS
     // =========================================================================
 
     const SCENARIOS = {
@@ -334,7 +341,7 @@
     };
 
     // =========================================================================
-    // 3. DETERMINISTIC DAG LINTER & TOPOLOGY VALIDATION
+    // 3. DETERMINISTIC DAG LINTER
     // =========================================================================
 
     function validateTopology(s1, s2, contracts) {
@@ -434,11 +441,12 @@
       Refresh: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>,
       Terminal: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>,
       Play: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
-      Info: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      Info: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
+      Sparkles: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.286L13 21l-2.286-6.857L5 12l5.714-2.286L13 3z"/></svg>
     };
 
     // =========================================================================
-    // 5. MAIN APP COMPONENT
+    // 5. MAIN APP COMPONENT (WITH PHASE 2 WIZARD & AUTOPSY)
     // =========================================================================
 
     function App() {
@@ -446,7 +454,7 @@
       const [currentRound, setCurrentRound] = useState(1);
       const [companyCapital, setCompanyCapital] = useState(100000);
       const [lossRatio, setLossRatio] = useState(4);
-      const [activeRole, setActiveRole] = useState('MANAGER');
+      const [activeRole, setActiveRole] = useState('EXECUTIVE'); // Start as Executive for Wizard!
 
       const [contracts, setContracts] = useState([]);
       const [slotS1, setSlotS1] = useState([]);
@@ -466,20 +474,25 @@
 
       const [ledgerLog, setLedgerLog] = useState([
         `[系統開機]: 遊戲準備就緒！當前任務：${SCENARIOS['MANUFACTURING'].title}`,
-        `[遊戲規則]: 抽中黑天鵝若沒被【C4 警報器】擋下，公司立刻破產倒閉！`
+        `[新手保姆模式]: 已開啟！請跟著頂部的保姆導引一步步操作。`
       ]);
+
+      // Phase 2: Onboarding Wizard & Autopsy Modal
+      const [isTutorialActive, setIsTutorialActive] = useState(true);
+      const [tutorialStep, setTutorialStep] = useState(1); // 1: Sign W1, 2: Place K1/A1 to S1, 3: Draw First Card, 4: Done
+      const [showAutopsyModal, setShowAutopsyModal] = useState(false);
+      const [autopsyData, setAutopsyData] = useState(null);
 
       // Modals & Toast State
       const [showHITLModal, setShowHITLModal] = useState(false);
       const [pendingHITLCard, setPendingHITLCard] = useState(null);
       const [showFourQuestionsModal, setShowFourQuestionsModal] = useState(false);
       const [distilledSkillCreated, setDistilledSkillCreated] = useState(false);
-      const [toast, setToast] = useState(null); // { text, type: 'info'|'warning'|'error' }
+      const [toast, setToast] = useState(null);
 
       const scenario = SCENARIOS[scenarioKey];
       const logContainerRef = useRef(null);
 
-      // Trigger Toast helper (No intrusive alert popups!)
       const triggerToast = (text, type = 'info') => {
         setToast({ text, type });
         setTimeout(() => {
@@ -533,13 +546,14 @@
         triggerToast(`已切換情境至：${SCENARIOS[key].title}，牌堆已重新洗牌！`, 'info');
       };
 
+      // Component Add/Move with Tutorial Progress Hooks
       const handleAddOrMove = (comp, targetSlot) => {
         if (activeRole !== 'MANAGER' && targetSlot !== 'GLOBAL_CONTRACT') {
-          triggerToast('⚠️ 只有【📐 經理】能搬動與配置積木！請點上方切換為經理。', 'warning');
+          triggerToast('⚠️ 只有【📐 經理】能搬動積木！請點上方切換為經理。', 'warning');
           return;
         }
         if (activeRole !== 'EXECUTIVE' && targetSlot === 'GLOBAL_CONTRACT') {
-          triggerToast('⚠️ 只有【👑 老闆】能簽署賺錢底線合約！請點上方切換為老闆。', 'warning');
+          triggerToast('⚠️ 只有【👑 老闆】能簽署底線合約！請點上方切換為老闆。', 'warning');
           return;
         }
 
@@ -548,6 +562,13 @@
             setContracts([comp]);
             addLog(`👑 老闆已簽署合約：[${comp.name}]！鎖定賺錢底線。`);
             triggerToast('👑 老闆成功簽署【W1 總裁合約】！底線已鎖死。', 'info');
+
+            // Advance Tutorial Step 1 -> Step 2
+            if (isTutorialActive && tutorialStep === 1) {
+              setTutorialStep(2);
+              setActiveRole('MANAGER'); // Auto-switch to Manager for beginner convenience!
+              triggerToast('✨ 太棒了！老闆已簽好合約。現在系統自動切換為【經理】，請裝配基礎積木！', 'info');
+            }
           }
           return;
         }
@@ -561,9 +582,20 @@
         const newS2 = slotS2.filter(c => c.id !== comp.id);
 
         if (targetSlot === 'SYSTEM_1_SLOT_5') {
-          setSlotS1([...newS1, comp]);
+          const updatedS1 = [...newS1, comp];
+          setSlotS1(updatedS1);
           setSlotS2(newS2);
           addLog(`📐 經理將 [${comp.name}] 裝上 ⚡ ⑤ 小腦反射區 (直覺快篩)`);
+
+          // Check Tutorial Step 2 -> Step 3 (Both K1 and A1 in S1)
+          if (isTutorialActive && tutorialStep === 2) {
+            const hasK1 = updatedS1.some(c => c.id === 'K1');
+            const hasA1 = updatedS1.some(c => c.id === 'A1');
+            if (hasK1 && hasA1) {
+              setTutorialStep(3);
+              triggerToast('🎯 完美！小腦已擁有【現場眼睛 K1】與【執行小手 A1】！現在可以抽牌測試了！', 'info');
+            }
+          }
         } else if (targetSlot === 'SYSTEM_2_SLOT_6') {
           setSlotS2([...newS2, comp]);
           setSlotS1(newS1);
@@ -585,7 +617,7 @@
         }
       };
 
-      // CARD EXECUTION PIPELINE
+      // Execute Single Card
       const executeSingleCard = (card) => {
         setCurrentExecutingCard(card);
 
@@ -603,6 +635,13 @@
           setCompanyCapital(prev => prev + profit - execCost);
           setConfusionMatrix(prev => ({ ...prev, passed: prev.passed + 1 }));
           addLog(`✅【常態平安出貨】：${card.title}。進帳 +$${profit}，API 消耗 -$${execCost}`);
+
+          // Check Tutorial Step 3 -> Step 4
+          if (isTutorialActive && tutorialStep === 3) {
+            setTutorialStep(4);
+            triggerToast('🎉 恭喜賺到第一筆收入！新手教學圓滿完成！現在進入自由模式，注意隨時可能出現的黑天鵝！', 'info');
+          }
+
           return { status: 'CONTINUE' };
         }
 
@@ -618,11 +657,22 @@
             setExecutionStatus('HITL_PROMPT');
             return { status: 'HALT_HITL' };
           } else {
+            // Missing Hook -> Type 2 Error -> Trigger Autopsy Modal!
             setConfusionMatrix(prev => ({ ...prev, type2Error: prev.type2Error + 1 }));
             const penalty = card.hazardPenalty;
             setCompanyCapital(prev => prev - penalty);
             setExecutionStatus('BANKRUPT');
             addLog(`☠️【致命大意！把眼鏡蛇當繩子抓】：沒裝 C4 警報器！系統把賠錢急單直接放行，違約慘賠 -$${penalty}！公司倒閉！`);
+
+            // Phase 2 Autopsy Report Pop!
+            setAutopsyData({
+              hazardCardTitle: card.title,
+              penalty: penalty,
+              reason: '未配置【C4 保命警報器 Hook】！系統在面對毛利跌破 15% 的高危險訂單時，毫無感知地直接自動放行，導致工廠違約暴死！',
+              cure: '在 ⑤ 號小腦反射區裝上【C4 保命警報器】，當毛利跌破 15% 時系統會逼逼叫並強制煞車轉交現場人員審查！'
+            });
+            setShowAutopsyModal(true);
+
             return { status: 'HALT_BANKRUPT' };
           }
         }
@@ -652,7 +702,7 @@
           return;
         }
         if (executionStatus === 'BANKRUPT') {
-          triggerToast('☠️ 公司已經破產倒閉了！請按右上角重啟遊戲。', 'error');
+          triggerToast('☠️ 公司已經破產倒閉了！請查看死因解剖報告或點擊重置。', 'error');
           return;
         }
         if (deck.length === 0) {
@@ -701,7 +751,36 @@
           addLog(`☠️【現場基層裁決・選 B】：現場人員盲目放行！導致嚴重違約賠償 -$${penalty}，直接宣告倒閉！`);
           setShowHITLModal(false);
           setPendingHITLCard(null);
+
+          // Autopsy for wrong HITL choice
+          setAutopsyData({
+            hazardCardTitle: pendingHITLCard.title,
+            penalty: penalty,
+            reason: '現場人員在 HITL 緊急控制台中選擇了【硬幹盲目放行】！在毛利只剩 12% 且機台故障時強行接單，釀成違約滅頂之災！',
+            cure: '遇到低毛利異常單時，現場必須堅守【W1 老闆底線】，選擇要求加價或延期，不可盲目妥協放行！'
+          });
+          setShowAutopsyModal(true);
         }
+      };
+
+      // Resurrect & Auto-Equip C4 Hook (Phase 2 Instant Learning Loop)
+      const handleResurrectWithHook = () => {
+        setCompanyCapital(100000);
+        setExecutionStatus('IDLE');
+        setShowAutopsyModal(false);
+
+        // Auto-equip C4 to S1
+        const compHook = COMPONENTS_SSOT.find(c => c.id === 'C4');
+        if (compHook && !slotS1.some(c => c.id === 'C4')) {
+          setSlotS1(prev => [...prev.filter(c => c.id !== 'C4'), compHook]);
+        }
+
+        setDeck(createFreshDeck(scenarioKey));
+        setDrawnCards([]);
+        setCurrentExecutingCard(null);
+
+        addLog(`✨【公司滿血復活】：資本恢復 $100,000，並已為你自動裝上【C4 保命警報器】！現在再來抽牌試試看！`);
+        triggerToast('🛡️ 復活成功！已為你裝上【C4 警報器】，黑天鵝再來也不怕了！', 'info');
       };
 
       const handleDistillS2ToS1 = () => {
@@ -764,7 +843,10 @@
         setContracts([]);
         setConfusionMatrix({ passed: 0, type1Error: 0, type2Error: 0, intercepted: 0 });
         setDistilledSkillCreated(false);
-        addLog(`🔄 全局遊戲已重置，資本恢復 $100,000。`);
+        setIsTutorialActive(true);
+        setTutorialStep(1);
+        setActiveRole('EXECUTIVE');
+        addLog(`🔄 全局遊戲已重置，資本恢復 $100,000，重啟新手保姆導航。`);
         triggerToast('🔄 遊戲已全新重啟！', 'info');
       };
 
@@ -792,7 +874,7 @@
         <div className="flex flex-col min-h-screen relative">
 
           {/* ================================================================= */}
-          {/* TOAST FLOATING BANNER (NO INTRUSIVE BROWSER ALERT)                */}
+          {/* TOAST FLOATING BANNER                                             */}
           {/* ================================================================= */}
           {toast && (
             <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-toast">
@@ -818,7 +900,7 @@
                 <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
                   <span>AI 企業防禦沙盒：小世界大局觀</span>
                   <span className="text-[11px] px-2 py-0.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-300 font-mono">
-                    國中生秒懂版
+                    國中生秒懂版 v2.2
                   </span>
                 </h1>
                 <p className="text-[11px] text-slate-400">用 13 塊積木組裝 AI 公司，防範踩中劇毒黑天鵝破產！</p>
@@ -837,9 +919,9 @@
               </select>
 
               <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg px-3 py-1 gap-1.5">
-                <span className="text-xs text-slate-400">演化回合:</span>
+                <span className="text-xs text-slate-400">關卡進度:</span>
                 <span className="text-xs font-bold text-amber-400">
-                  第 {currentRound} 回合 / 共 3 關
+                  第 {currentRound} 關 / 共 3 關
                 </span>
                 <span className="text-[10px] text-slate-500">
                   {currentRound === 1 && '(剛起步裸奔)'}
@@ -881,6 +963,33 @@
               </button>
             </div>
           </header>
+
+          {/* ================================================================= */}
+          {/* PHASE 2: ONBOARDING WIZARD GUIDE BANNER                           */}
+          {/* ================================================================= */}
+          {isTutorialActive && tutorialStep <= 3 && (
+            <div className="bg-gradient-to-r from-cyan-950 via-slate-900 to-blue-950 border-b border-cyan-500/50 px-6 py-2.5 flex items-center justify-between text-xs animate-pulse-slow">
+              <div className="flex items-center gap-3">
+                <span className="px-2 py-0.5 rounded bg-cyan-500 text-black font-black text-[10px] tracking-wider uppercase">
+                  保姆導航 {tutorialStep}/3
+                </span>
+                <span className="font-bold text-cyan-200">
+                  {tutorialStep === 1 && '👉【第 1 步・老闆合約】：請點擊左側【W1 老闆賺錢底線】旁的「+ 老闆簽約」按鈕，鎖定毛利必須 > 15%！'}
+                  {tutorialStep === 2 && '👉【第 2 步・小腦裝配】：請點擊左側【K1 現場工單】與【A1 執行小手】旁的「+ ⑤ 小腦」，裝上基礎快篩防線！'}
+                  {tutorialStep === 3 && '👉【第 3 步・抽牌體驗】：請點擊中間的「抽 1 張試水溫」，看小腦如何 1 秒自動賺到第一筆收入！'}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setIsTutorialActive(false);
+                  triggerToast('已關閉新手保姆導航，進入自由探索模式！', 'info');
+                }}
+                className="text-[11px] text-slate-400 hover:text-slate-200 underline font-mono"
+              >
+                我是老手，跳過教學 ✕
+              </button>
+            </div>
+          )}
 
           {/* ================================================================= */}
           {/* THREE-TIER ROLE TABS                                              */}
@@ -929,7 +1038,6 @@
               </button>
             </div>
 
-            {/* Beginner Guide Banner */}
             <div className="flex items-center gap-3">
               <span className="text-xs px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300">
                 👉 <strong>當前身分職責</strong>：
@@ -988,15 +1096,22 @@
                     const inGlobal = contracts.some(c => c.id === comp.id);
                     const isPlaced = inS1 || inS2 || inGlobal;
 
+                    // Phase 2 Tutorial Highlighting
+                    const isStep1Target = isTutorialActive && tutorialStep === 1 && comp.id === 'W1';
+                    const isStep2Target = isTutorialActive && tutorialStep === 2 && (comp.id === 'K1' || comp.id === 'A1') && !inS1;
+
                     return (
                       <div
                         key={comp.id}
                         className={`p-2.5 rounded-lg border text-xs transition relative group ${getPillarColor(comp.pillar)} ${
                           isPlaced ? 'opacity-55 ring-1 ring-slate-600' : 'hover:border-cyan-400'
-                        }`}
+                        } ${isStep1Target ? 'highlight-step ring-2 ring-amber-400' : ''} ${isStep2Target ? 'highlight-step ring-2 ring-cyan-400' : ''}`}
                       >
                         <div className="flex items-center justify-between mb-1">
-                          <span className="font-bold text-slate-100">{comp.simpleTitle}</span>
+                          <span className="font-bold text-slate-100 flex items-center gap-1">
+                            {(isStep1Target || isStep2Target) && <span className="animate-bounce">👉</span>}
+                            <span>{comp.simpleTitle}</span>
+                          </span>
                           <span className={`text-[10px] px-1.5 py-0.2 rounded border font-mono ${getPillarBadge(comp.pillar)}`}>
                             {comp.code}
                           </span>
@@ -1015,9 +1130,9 @@
                             {comp.allowedSlots.includes('GLOBAL_CONTRACT') && (
                               <button
                                 onClick={() => handleAddOrMove(comp, 'GLOBAL_CONTRACT')}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
                                   inGlobal ? 'bg-amber-500 text-black border-amber-400' : 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/40 border-amber-500/40'
-                                }`}
+                                } ${isStep1Target ? 'ring-2 ring-amber-400 font-black animate-pulse' : ''}`}
                               >
                                 {inGlobal ? '✓ 已簽約' : '+ 老闆簽約'}
                               </button>
@@ -1025,9 +1140,9 @@
                             {comp.allowedSlots.includes('SYSTEM_1_SLOT_5') && (
                               <button
                                 onClick={() => handleAddOrMove(comp, 'SYSTEM_1_SLOT_5')}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
                                   inS1 ? 'bg-cyan-500 text-black border-cyan-400' : 'bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/40 border-cyan-500/40'
-                                }`}
+                                } ${isStep2Target ? 'ring-2 ring-cyan-400 font-black animate-pulse' : ''}`}
                               >
                                 {inS1 ? '✓ 裝在小腦' : '+ ⑤ 小腦'}
                               </button>
@@ -1080,9 +1195,13 @@
                     <button
                       onClick={() => handleDrawAndExecute(1)}
                       disabled={deck.length === 0 || executionStatus === 'BANKRUPT' || !linterResult.valid}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 disabled:opacity-40 flex items-center gap-1 transition"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1 transition ${
+                        isTutorialActive && tutorialStep === 3
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 ring-2 ring-emerald-400 animate-pulse'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 disabled:opacity-40'
+                      }`}
                     >
-                      <Icons.Play /> 抽 1 張試水溫
+                      <Icons.Play /> {isTutorialActive && tutorialStep === 3 ? '👉 抽 1 張試水溫' : '抽 1 張試水溫'}
                     </button>
                     <button
                       onClick={() => handleDrawAndExecute(5)}
@@ -1328,7 +1447,7 @@
                   <span className="text-[10px] text-cyan-400 font-mono">第 {currentRound} 關</span>
                 </div>
 
-                {/* 4 EMOJI STATUS TILES (JUNIOR HIGH ACCESSIBLE) */}
+                {/* 4 EMOJI STATUS TILES */}
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <div className={`p-2 rounded border text-[11px] ${
                     slotS1.length > 0 ? 'bg-cyan-950/80 border-cyan-500 text-cyan-300' : 'bg-slate-950 border-slate-800 text-slate-500'
@@ -1441,7 +1560,74 @@
           </main>
 
           {/* ================================================================= */}
-          {/* FRONTLINE HITL EMERGENCY MODAL (HIGH PRIORITY POPUP)              */}
+          {/* PHASE 2: AUTOPSY REPORT MODAL (ON BANKRUPTCY)                     */}
+          {/* ================================================================= */}
+          {showAutopsyModal && autopsyData && (
+            <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
+              <div className="bg-slate-900 border-2 border-red-600 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+                <div className="flex items-center gap-3 text-red-500 mb-4 pb-3 border-b border-red-900/50">
+                  <div className="text-3xl">💀</div>
+                  <div>
+                    <h3 className="text-lg font-black text-white tracking-wide">
+                      公司破產宣告與架構死因解剖報告
+                    </h3>
+                    <p className="text-xs text-red-400 font-mono">
+                      [POST-MORTEM AUTOPSY]: 踩中 Type 2 劇毒黑天鵝！
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3.5 text-xs text-slate-300">
+                  <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30">
+                    <div className="font-bold text-red-300 mb-1 flex items-center gap-1.5">
+                      <span>🩸 致命死因：</span>
+                      <span className="font-mono text-white">{autopsyData.hazardCardTitle}</span>
+                    </div>
+                    <p className="text-slate-300">
+                      遭遇黑天鵝暴跌！工廠違約遭索賠 <strong className="text-red-400 font-mono">-${autopsyData.penalty.toLocaleString()}</strong>，資本瞬間歸零，公司直接宣告破產出局！
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-amber-400 mb-1">
+                      🔍 為什麼會死得這麼慘？（Type 2 漏放錯誤）：
+                    </div>
+                    <p className="text-slate-400 leading-relaxed">
+                      {autopsyData.reason}
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+                    <div className="font-bold text-emerald-400 mb-1">
+                      💊 急救處方籤（如何一秒破局？）：
+                    </div>
+                    <p className="text-slate-300 leading-relaxed">
+                      {autopsyData.cure}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Instant Recovery Button */}
+                <div className="mt-6 flex flex-col gap-2">
+                  <button
+                    onClick={handleResurrectWithHook}
+                    className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-sm font-black text-white shadow-xl shadow-emerald-500/30 flex items-center justify-center gap-2 transition"
+                  >
+                    <span>🛡️ 滿血復活，並自動為我裝上【C4 保命警報器】！</span>
+                  </button>
+                  <button
+                    onClick={() => setShowAutopsyModal(false)}
+                    className="text-xs text-slate-400 hover:text-slate-200 text-center py-1 font-mono"
+                  >
+                    關閉報告，我自己手動調整
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* FRONTLINE HITL EMERGENCY MODAL                                    */}
           {/* ================================================================= */}
           {showHITLModal && pendingHITLCard && (
             <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50">
