@@ -1,0 +1,1761 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A47: Game of Small World — AI 公司防暴死模擬器</title>
+  <!-- React & Babel Standalone (No Build Step Required) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Tailwind CSS Play CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            slate: {
+              950: '#030712',
+            }
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .animate-pulse-slow {
+      animation: pulse-slow 2s infinite ease-in-out;
+    }
+    @keyframes float-up {
+      0% { opacity: 0; transform: translateY(10px); }
+      20% { opacity: 1; transform: translateY(0); }
+      80% { opacity: 1; transform: translateY(-5px); }
+      100% { opacity: 0; transform: translateY(-15px); }
+    }
+    .animate-toast {
+      animation: float-up 3s forwards ease-out;
+    }
+    @keyframes highlight-glow {
+      0%, 100% { box-shadow: 0 0 15px rgba(56, 189, 248, 0.6); }
+      50% { box-shadow: 0 0 30px rgba(56, 189, 248, 0.9); }
+    }
+    .highlight-step {
+      animation: highlight-glow 1.5s infinite;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #090d16;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1e293b;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #334155;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen selection:bg-cyan-500 selection:text-black">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // =========================================================================
+    // 1. DATA SCHEMAS & 13 COMPONENTS SSOT (國中生生活白話隱喻版)
+    // =========================================================================
+
+    const COMPONENTS_SSOT = [
+      // KNOW (情報庫 - 藍色)
+      {
+        id: 'K1',
+        code: 'KNOW.1',
+        name: '即時現場工單 (Context)',
+        simpleTitle: '【現場眼睛】不瞎猜工單',
+        pillar: 'KNOW',
+        cost: 10,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: [],
+        description: '急單要幾件、交期哪一天、航班代碼是什麼。AI 不瞎猜，先看現場情報！',
+        reverseRisk: '無'
+      },
+      {
+        id: 'K2',
+        code: 'KNOW.2',
+        name: '機台常壞筆記 (Memory)',
+        simpleTitle: '【經驗筆記】熟客與歷史記憶',
+        pillar: 'KNOW',
+        cost: 20,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['K1'],
+        description: '記住上次哪家外協有現貨、5號機台常卡料，不用每次重頭問。',
+        reverseRisk: '筆記若太舊沒更新，AI 會依賴舊經驗給錯答案'
+      },
+      {
+        id: 'K3',
+        code: 'KNOW.3',
+        name: '厚厚法規大百科 (RAG)',
+        simpleTitle: '【翻大字典】法規手冊檢索',
+        pillar: 'KNOW',
+        cost: 50,
+        latency: 3,
+        allowedSlots: ['SYSTEM_2_SLOT_6'],
+        requires: ['K1'],
+        description: '翻查超厚退換貨合約或 ISO 認證條文。需要時間，別塞進小腦快篩區！',
+        reverseRisk: '【反向風險】翻書很花時間！塞進小腦會讓日常出貨速度卡死'
+      },
+
+      // WANT (目標意志 - 黃色)
+      {
+        id: 'W1',
+        code: 'WANT.1',
+        name: '老闆賺錢底線 (Goal)',
+        simpleTitle: '【總裁合約】毛利必須 > 15%',
+        pillar: 'WANT',
+        cost: 0,
+        latency: 0,
+        allowedSlots: ['GLOBAL_CONTRACT'],
+        requires: [],
+        description: '老闆最高命令：賠錢訂單絕對不准接！單筆 API 成本不可超標。',
+        reverseRisk: '沒設合約系統就會亂跑，甚至賠本做慈善'
+      },
+      {
+        id: 'W2',
+        code: 'WANT.2',
+        name: '員工守則邊界 (Prompt)',
+        simpleTitle: '【管家家規】禁止亂下單與刪庫',
+        pillar: 'WANT',
+        cost: 10,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['W1'],
+        description: '約束 AI：未經主管核准嚴禁刷卡、不可擅自答應客戶不可能的交期。',
+        reverseRisk: '無'
+      },
+      {
+        id: 'W3',
+        code: 'WANT.3',
+        name: '超級大腦深思 (Reasoning)',
+        simpleTitle: '【天才思考】超燒腦但也超貴！',
+        pillar: 'WANT',
+        cost: 200,
+        latency: 10,
+        allowedSlots: ['SYSTEM_2_SLOT_6'],
+        requires: ['K1', 'W1'],
+        description: '解奧數題般的超深度邏輯推演。非常昂貴，只用來搶大訂單或解大災難！',
+        reverseRisk: '【嚴重警告】若放進快篩區處理日常小單，等於殺雞用牛刀，算力爆炸客戶等到發瘋！'
+      },
+
+      // ACT (執行雙手 - 紅色)
+      {
+        id: 'A1',
+        code: 'ACT.1',
+        name: '自動下單手腳 (Tools API)',
+        simpleTitle: '【執行小手】查庫存與訂票',
+        pillar: 'ACT',
+        cost: 30,
+        latency: 2,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['K1'],
+        description: '真正去按 ERP 按鈕、查工廠倉庫有幾噸鋼料、去機票網站查空位。',
+        reverseRisk: '若沒裝 C5 萬國插座，每次串接成本直接變 3 倍貴！'
+      },
+      {
+        id: 'A2',
+        code: 'ACT.2',
+        name: '快速通關公式包 (Skills SOP)',
+        simpleTitle: '【通關秘笈】將工具打包成SOP',
+        pillar: 'ACT',
+        cost: 50,
+        latency: 3,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['A1'],
+        description: '把「查料 + 算毛利 + 報價」包裝成自動作業套件，小腦也能光速跑完。',
+        reverseRisk: '無'
+      },
+      {
+        id: 'A3',
+        code: 'ACT.3',
+        name: '外協生態轉接器 (Plugin)',
+        simpleTitle: '【外部外掛】跨廠即時調度神器',
+        pillar: 'ACT',
+        cost: 100,
+        latency: 5,
+        allowedSlots: ['SYSTEM_2_SLOT_6'],
+        requires: ['A1', 'C5'],
+        description: '連線到外協工廠或租車禮賓生態圈，是抓住右尾大商機的獨門武器！',
+        reverseRisk: '連外網可能卡住，沒配 C1 保險絲容易超時當機'
+      },
+
+      // CONTROL (剎車護盾 - 綠色)
+      {
+        id: 'C1',
+        code: 'CTRL.1',
+        name: '預算保險絲裝甲 (Harness)',
+        simpleTitle: '【防燒錢卡】單次刷卡上限防呆',
+        pillar: 'CONTROL',
+        cost: 20,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: [],
+        description: '限制 AI 每次最多花多少錢、最多試幾次，防止系統無限狂刷信用額度。',
+        reverseRisk: '無'
+      },
+      {
+        id: 'C2',
+        code: 'CTRL.2',
+        name: '不服輸重試迴圈 (Loop)',
+        simpleTitle: '【重試引擎】查不到自動換招再查',
+        pillar: 'CONTROL',
+        cost: 120,
+        latency: 6,
+        allowedSlots: ['SYSTEM_2_SLOT_6'],
+        requires: ['W3', 'C1'],
+        description: '查無庫存時自動換關鍵字重新搜尋。若沒配 C1 保險絲，會無限迴圈燒光所有錢！',
+        reverseRisk: '若沒裝 C1 保險絲，抽到黑天鵝卡時會陷入無限重試迴圈直接破產'
+      },
+      {
+        id: 'C3',
+        code: 'CTRL.3',
+        name: '條件分流管線 (Graph DAG)',
+        simpleTitle: '【自動分流】查料->算毛利排程',
+        pillar: 'CONTROL',
+        cost: 30,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['A1'],
+        description: '先查料，有料算毛利，沒料才找外協。像工廠傳送帶一樣有條不紊。',
+        reverseRisk: '無'
+      },
+      {
+        id: 'C4',
+        code: 'CTRL.4',
+        name: '保命警報器 (Hook)',
+        simpleTitle: '【救命煞車】毛利<15%強制攔截！',
+        pillar: 'CONTROL',
+        cost: 15,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: ['W1'],
+        description: '保命核心！瓦斯外洩時逼逼叫！發現賠錢急單或劇毒黑天鵝立即強制煞車，轉交人類主管裁決！',
+        reverseRisk: '雖然有時小緊張轉人工（誤殺微小成本），但不裝會直接踩中黑天鵝暴死！'
+      },
+      {
+        id: 'C5',
+        code: 'CTRL.5',
+        name: '萬國標準插座 (MCP)',
+        simpleTitle: '【統一插頭】標準模型上下文協議',
+        pillar: 'CONTROL',
+        cost: 25,
+        latency: 1,
+        allowedSlots: ['SYSTEM_1_SLOT_5', 'SYSTEM_2_SLOT_6'],
+        requires: [],
+        description: '統一所有 ERP 與機位 API 的插頭規格，避免每個工具自己亂接代碼。',
+        reverseRisk: '若不裝，所有工具每次調用成本強制膨脹 300%！'
+      }
+    ];
+
+    // =========================================================================
+    // 2. SCENARIO PACKS
+    // =========================================================================
+
+    const SCENARIOS = {
+      MANUFACTURING: {
+        id: 'MANUFACTURING',
+        title: '🏭 傳統製造業 — 5000支 不銹鋼精密零件急單 (3天交貨)',
+        badge: '🏭 中小工廠',
+        w1Goal: '急單毛利必須 >= 15%，單次 API 預算 <= $450，總延遲 <= 15s',
+        deckInfo: '20 張生產批次工單（18 張日常賺小錢、1 張劇毒眼鏡蛇黑天鵝、1 張跨國長約大鑽石）',
+        leftTailCard: {
+          id: 'CARD_HAZARD_MFG',
+          type: 'LEFT_TAIL',
+          title: '🚨【左尾黑天鵝・毒蛇】原料斷貨！射出機卡死大噴火！',
+          content: '庫存只剩 200kg！INJ-05 號射出機故障率飆升，外協廠現貨突然喊漲 8%，算下來毛利只剩 12%（賠錢做）！外部 API 超時塞車中！',
+          hitlActionA: '【正解】立刻致電客戶要求加價 5% 並多給 2 天交期（保住 15% 毛利，安全過關）',
+          hitlActionB: '【硬幹】不管了閉著眼睛接單，強行出貨（違約賠償 -$50,000，公司直接破產出局）',
+          hazardPenalty: 50000,
+          hitlSuccessReward: 3500
+        },
+        rightTailCard: {
+          id: 'CARD_OPP_MFG',
+          type: 'RIGHT_TAIL',
+          title: '💎【右尾大商機・鑽石】跨國巨頭急尋備援長約！',
+          content: '跨國大廠急尋替補供應商！若能在 20 秒內透過外協大腦網路鎖定現貨並給出跨廠產能證明，願溢價 35% 簽署年度巨額大約！',
+          reward: 30000,
+          requiresInS2: ['W3', 'A3', 'C2', 'C3']
+        },
+        routineGenerator: (i) => ({
+          id: `ROUTINE_MFG_${i}`,
+          type: 'ROUTINE',
+          title: `📦【日常工單 ⑨】SUS304 零件批次 #${i + 1}`,
+          content: '倉庫不銹鋼原料充足、機台順暢，毛利率 22%，小腦快篩 1 秒搞定。',
+          baseMargin: 1200
+        })
+      },
+      SERVICE: {
+        id: 'SERVICE',
+        title: '✈️ 高端商務旅行 — 跨洋商務艙航班突遭取消 (4小時改簽)',
+        badge: '✈️ 頂級管家',
+        w1Goal: '改簽總成本 <= $150,000 NTD，SLA 響應延遲 <= 12s',
+        deckInfo: '20 張 VIP 改簽需求（18 張常態航班、1 張簽證天價黑天鵝、1 張絕版豪華商務席）',
+        leftTailCard: {
+          id: 'CARD_HAZARD_SVC',
+          type: 'LEFT_TAIL',
+          title: '🚨【左尾黑天鵝・毒蛇】直飛客滿！AI 擅自狂刷 $38 萬包私人機！',
+          content: '直飛全客滿！AI 差點自動刷公司黑卡 $380,000 訂私人飛機，且未檢查貴賓沒有歐盟申根過境簽證！',
+          hitlActionA: '【正解】管家介入！推薦國泰經香港中轉並升級萬豪套房（守住預算與簽證合規）',
+          hitlActionB: '【大意】放任 AI 自動刷卡私人飛機（預算破錶、簽證被拒登機巨額求償破產）',
+          hazardPenalty: 60000,
+          hitlSuccessReward: 5000
+        },
+        rightTailCard: {
+          id: 'CARD_OPP_SVC',
+          type: 'RIGHT_TAIL',
+          title: '💎【右尾大商機・鑽石】漢莎航空絕版頭等艙與跨國接送聯動！',
+          content: '漢莎轉機釋出最後 1 席！需同步呼叫萬豪延遲退房、Blacklane 禮賓黑頭車動態調度與外幣即時鎖匯！',
+          reward: 35000,
+          requiresInS2: ['W3', 'A2', 'A3', 'C3']
+        },
+        routineGenerator: (i) => ({
+          id: `ROUTINE_SVC_${i}`,
+          type: 'ROUTINE',
+          title: `🎫【日常改簽 ⑨】商務差旅需求 #${i + 1}`,
+          content: '標準商務艙改簽與飯店入住，小腦快篩通道 2 秒完成。',
+          baseMargin: 1500
+        })
+      }
+    };
+
+    // =========================================================================
+    // 3. DETERMINISTIC DAG LINTER
+    // =========================================================================
+
+    function validateTopology(s1, s2, contracts) {
+      const errors = [];
+      const warnings = [];
+      const allPlaced = [...s1, ...s2, ...contracts];
+      const allIds = new Set(allPlaced.map(c => c.id));
+      const s1Ids = new Set(s1.map(c => c.id));
+      const s2Ids = new Set(s2.map(c => c.id));
+
+      if (!contracts.some(c => c.id === 'W1')) {
+        errors.push({ slot: 'GLOBAL', code: 'ERR_NO_W1', message: '👑 老闆尚未簽署【W1 總裁合約】（沒有設定 15% 毛利底線）' });
+      }
+
+      const checkSlot = (slotComponents, slotDisplayName, slotIds) => {
+        const hasContext = slotIds.has('K1') || s1Ids.has('K1');
+        if (slotComponents.length > 0 && !hasContext) {
+          errors.push({ slot: slotDisplayName, code: 'ERR_NO_CONTEXT', message: `${slotDisplayName} 缺少【K1 現場工單】，AI 閉著眼睛沒資料可看` });
+        }
+
+        for (const comp of slotComponents) {
+          for (const req of comp.requires) {
+            const isSatisfied = req === 'K1' ? allIds.has(req) : slotIds.has(req);
+            if (!isSatisfied) {
+              errors.push({
+                slot: slotDisplayName,
+                code: 'ERR_MISSING_DEP',
+                message: `${comp.name} 缺少前置積木 [${req}]，無法運作`
+              });
+            }
+          }
+        }
+
+        const hasControl = slotComponents.some(c => c.pillar === 'CONTROL');
+        const hasAct = slotComponents.some(c => c.pillar === 'ACT');
+        if (hasControl && !hasAct && slotComponents.length > 0) {
+          warnings.push({ slot: slotDisplayName, code: 'WARN_ORPHAN_CONTROL', message: `${slotDisplayName} 裝了開關/排程，但沒有裝任何【執行小手 ACT】，等於空轉` });
+        }
+      };
+
+      checkSlot(s1, '⚡ ⑤ 小腦反射區 (S1)', s1Ids);
+      checkSlot(s2, '🧠 ⑥ 大腦精算區 (S2)', s2Ids);
+
+      const hasActTools = allPlaced.some(c => c.id === 'A1' || c.id === 'A3');
+      const hasMcp = allPlaced.some(c => c.id === 'C5');
+      const actCostMultiplier = (hasActTools && !hasMcp) ? 3.0 : 1.0;
+      if (hasActTools && !hasMcp) {
+        warnings.push({ slot: 'GLOBAL', code: 'WARN_NO_MCP', message: '⚠️ 沒裝【C5 萬國插座 MCP】，所有工具每次呼叫成本暴增 300%！' });
+      }
+
+      const reverseInS1 = s1.filter(c => c.id === 'W3' || c.id === 'C2' || c.id === 'K3');
+      const isReverseQuality = reverseInS1.length > 0;
+      if (isReverseQuality) {
+        warnings.push({
+          slot: '⚡ ⑤ 小腦反射區 (S1)',
+          code: 'WARN_REVERSE_QUALITY',
+          message: `🚨【好心做壞事！】在小腦快篩區誤放了慢想積木 [${reverseInS1.map(c=>c.id).join(', ')}]，日常小單算力大暴錶、延遲超重！`
+        });
+      }
+
+      return {
+        valid: errors.length === 0,
+        errors,
+        warnings,
+        actCostMultiplier,
+        isReverseQuality,
+        reverseComponents: reverseInS1
+      };
+    }
+
+    function createFreshDeck(scenarioKey) {
+      const scenario = SCENARIOS[scenarioKey];
+      const deck = [];
+      for (let i = 0; i < 18; i++) {
+        deck.push(scenario.routineGenerator(i));
+      }
+      deck.push(scenario.leftTailCard);
+      deck.push(scenario.rightTailCard);
+
+      for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+      }
+      return deck;
+    }
+
+    // =========================================================================
+    // 4. SVG ICONS
+    // =========================================================================
+
+    const Icons = {
+      Shield: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>,
+      Zap: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>,
+      Alert: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>,
+      Cross: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>,
+      Package: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>,
+      Refresh: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>,
+      Terminal: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>,
+      Play: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
+      Info: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
+      Sparkles: () => <svg className="w-4 h-4 inline-block" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.286L13 21l-2.286-6.857L5 12l5.714-2.286L13 3z"/></svg>
+    };
+
+    // =========================================================================
+    // 5. MAIN APP COMPONENT (WITH PHASE 2 WIZARD & AUTOPSY)
+    // =========================================================================
+
+    function App() {
+      const [scenarioKey, setScenarioKey] = useState('MANUFACTURING');
+      const [currentRound, setCurrentRound] = useState(1);
+      const [companyCapital, setCompanyCapital] = useState(100000);
+      const [lossRatio, setLossRatio] = useState(4);
+      const [activeRole, setActiveRole] = useState('EXECUTIVE'); // Start as Executive for Wizard!
+
+      const [contracts, setContracts] = useState([]);
+      const [slotS1, setSlotS1] = useState([]);
+      const [slotS2, setSlotS2] = useState([]);
+
+      const [deck, setDeck] = useState(() => createFreshDeck('MANUFACTURING'));
+      const [drawnCards, setDrawnCards] = useState([]);
+      const [currentExecutingCard, setCurrentExecutingCard] = useState(null);
+      const [executionStatus, setExecutionStatus] = useState('IDLE');
+
+      const [confusionMatrix, setConfusionMatrix] = useState({
+        passed: 0,
+        type1Error: 0,
+        type2Error: 0,
+        intercepted: 0
+      });
+
+      const [ledgerLog, setLedgerLog] = useState([
+        `[系統開機]: 遊戲準備就緒！當前任務：${SCENARIOS['MANUFACTURING'].title}`,
+        `[新手保姆模式]: 已開啟！請跟著頂部的保姆導引一步步操作。`
+      ]);
+
+      // Phase 2: Onboarding Wizard & Autopsy Modal
+      const [isTutorialActive, setIsTutorialActive] = useState(true);
+      const [tutorialStep, setTutorialStep] = useState(1); // 1: Sign W1, 2: Place K1/A1 to S1, 3: Draw First Card, 4: Done
+      const [showAutopsyModal, setShowAutopsyModal] = useState(false);
+      const [autopsyData, setAutopsyData] = useState(null);
+
+      // Modals & Toast State
+      const [showHITLModal, setShowHITLModal] = useState(false);
+      const [pendingHITLCard, setPendingHITLCard] = useState(null);
+      const [showFourQuestionsModal, setShowFourQuestionsModal] = useState(false);
+      const [distilledSkillCreated, setDistilledSkillCreated] = useState(false);
+      const [toast, setToast] = useState(null);
+
+      const scenario = SCENARIOS[scenarioKey];
+      const logContainerRef = useRef(null);
+
+      const triggerToast = (text, type = 'info') => {
+        setToast({ text, type });
+        setTimeout(() => {
+          setToast(null);
+        }, 3200);
+      };
+
+      useEffect(() => {
+        if (logContainerRef.current) {
+          logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+        }
+      }, [ledgerLog]);
+
+      const linterResult = useMemo(() => {
+        return validateTopology(slotS1, slotS2, contracts);
+      }, [slotS1, slotS2, contracts]);
+
+      const metrics = useMemo(() => {
+        const mult = linterResult.actCostMultiplier;
+        const calcSlot = (slot) => {
+          let cost = 0;
+          let latency = 0;
+          slot.forEach(c => {
+            const cCost = (c.pillar === 'ACT') ? c.cost * mult : c.cost;
+            cost += cCost;
+            latency += c.latency;
+          });
+          return { cost, latency };
+        };
+        const s1M = calcSlot(slotS1);
+        const s2M = calcSlot(slotS2);
+        const totalCost = s1M.cost + s2M.cost;
+        const s1Share = totalCost > 0 ? Math.round((s1M.cost / totalCost) * 100) : 0;
+        return { s1: s1M, s2: s2M, s1Share, mult };
+      }, [slotS1, slotS2, linterResult]);
+
+      const addLog = (msg) => {
+        const timestamp = new Date().toLocaleTimeString();
+        setLedgerLog(prev => [...prev, `[${timestamp}] ${msg}`]);
+      };
+
+      const handleSwitchScenario = (key) => {
+        setScenarioKey(key);
+        setDeck(createFreshDeck(key));
+        setDrawnCards([]);
+        setCurrentExecutingCard(null);
+        setExecutionStatus('IDLE');
+        setCompanyCapital(100000);
+        setConfusionMatrix({ passed: 0, type1Error: 0, type2Error: 0, intercepted: 0 });
+        setDistilledSkillCreated(false);
+        triggerToast(`已切換情境至：${SCENARIOS[key].title}，牌堆已重新洗牌！`, 'info');
+      };
+
+      // Component Add/Move with Tutorial Progress Hooks
+      const handleAddOrMove = (comp, targetSlot) => {
+        if (activeRole !== 'MANAGER' && targetSlot !== 'GLOBAL_CONTRACT') {
+          triggerToast('⚠️ 只有【📐 經理】能搬動積木！請點上方切換為經理。', 'warning');
+          return;
+        }
+        if (activeRole !== 'EXECUTIVE' && targetSlot === 'GLOBAL_CONTRACT') {
+          triggerToast('⚠️ 只有【👑 老闆】能簽署底線合約！請點上方切換為老闆。', 'warning');
+          return;
+        }
+
+        if (targetSlot === 'GLOBAL_CONTRACT') {
+          if (!contracts.some(c => c.id === comp.id)) {
+            setContracts([comp]);
+            addLog(`👑 老闆已簽署合約：[${comp.name}]！鎖定賺錢底線。`);
+            triggerToast('👑 老闆成功簽署【W1 總裁合約】！底線已鎖死。', 'info');
+
+            // Advance Tutorial Step 1 -> Step 2
+            if (isTutorialActive && tutorialStep === 1) {
+              setTutorialStep(2);
+              setActiveRole('MANAGER'); // Auto-switch to Manager for beginner convenience!
+              triggerToast('✨ 太棒了！老闆已簽好合約。現在系統自動切換為【經理】，請裝配基礎積木！', 'info');
+            }
+          }
+          return;
+        }
+
+        if (!comp.allowedSlots.includes(targetSlot)) {
+          triggerToast(`❌ 積木 [${comp.name}] 不適合放在這個槽位！`, 'error');
+          return;
+        }
+
+        const newS1 = slotS1.filter(c => c.id !== comp.id);
+        const newS2 = slotS2.filter(c => c.id !== comp.id);
+
+        if (targetSlot === 'SYSTEM_1_SLOT_5') {
+          const updatedS1 = [...newS1, comp];
+          setSlotS1(updatedS1);
+          setSlotS2(newS2);
+          addLog(`📐 經理將 [${comp.name}] 裝上 ⚡ ⑤ 小腦反射區 (直覺快篩)`);
+
+          // Check Tutorial Step 2 -> Step 3 (Both K1 and A1 in S1)
+          if (isTutorialActive && tutorialStep === 2) {
+            const hasK1 = updatedS1.some(c => c.id === 'K1');
+            const hasA1 = updatedS1.some(c => c.id === 'A1');
+            if (hasK1 && hasA1) {
+              setTutorialStep(3);
+              triggerToast('🎯 完美！小腦已擁有【現場眼睛 K1】與【執行小手 A1】！現在可以抽牌測試了！', 'info');
+            }
+          }
+        } else if (targetSlot === 'SYSTEM_2_SLOT_6') {
+          setSlotS2([...newS2, comp]);
+          setSlotS1(newS1);
+          addLog(`📐 經理將 [${comp.name}] 裝上 🧠 ⑥ 大腦精算區 (慢想深思)`);
+        }
+      };
+
+      const handleRemoveComponent = (comp, fromSlot) => {
+        if (activeRole !== 'MANAGER') {
+          triggerToast('⚠️ 只有【📐 經理】可以卸載積木！', 'warning');
+          return;
+        }
+        if (fromSlot === 'SYSTEM_1_SLOT_5') {
+          setSlotS1(slotS1.filter(c => c.id !== comp.id));
+          addLog(`📐 卸下小腦的 [${comp.name}]`);
+        } else if (fromSlot === 'SYSTEM_2_SLOT_6') {
+          setSlotS2(slotS2.filter(c => c.id !== comp.id));
+          addLog(`📐 卸下大腦的 [${comp.name}]`);
+        }
+      };
+
+      // Execute Single Card
+      const executeSingleCard = (card) => {
+        setCurrentExecutingCard(card);
+
+        if (linterResult.isReverseQuality && card.type === 'ROUTINE') {
+          const penalty = 2000;
+          setCompanyCapital(prev => prev - penalty);
+          addLog(`🚨【好心做壞事懲罰】：小腦誤裝慢想積木，處理日常單 #${card.id} 等太久被客訴！被罰扣款 -$${penalty}`);
+        }
+
+        if (card.type === 'ROUTINE') {
+          const s1Ready = slotS1.some(c => c.id === 'K1') && (slotS1.some(c => c.id === 'A1') || slotS1.some(c => c.id === 'A2') || slotS1.some(c => c.id === 'A2_DISTILLED'));
+          const profit = s1Ready ? card.baseMargin : Math.round(card.baseMargin * 0.4);
+          const execCost = metrics.s1.cost + (s1Ready ? 0 : metrics.s2.cost);
+
+          setCompanyCapital(prev => prev + profit - execCost);
+          setConfusionMatrix(prev => ({ ...prev, passed: prev.passed + 1 }));
+          addLog(`✅【常態平安出貨】：${card.title}。進帳 +$${profit}，API 消耗 -$${execCost}`);
+
+          // Check Tutorial Step 3 -> Step 4
+          if (isTutorialActive && tutorialStep === 3) {
+            setTutorialStep(4);
+            triggerToast('🎉 恭喜賺到第一筆收入！新手教學圓滿完成！現在進入自由模式，注意隨時可能出現的黑天鵝！', 'info');
+          }
+
+          return { status: 'CONTINUE' };
+        }
+
+        if (card.type === 'LEFT_TAIL') {
+          addLog(`💥【抽中劇毒黑天鵝！！】：${card.title}`);
+          const hasHook = slotS1.some(c => c.id === 'C4') || slotS2.some(c => c.id === 'C4');
+
+          if (hasHook) {
+            setConfusionMatrix(prev => ({ ...prev, intercepted: prev.intercepted + 1, type1Error: prev.type1Error + 1 }));
+            addLog(`🛡️【C4 警報器逼逼叫！】：毛利低於 15% 強制緊急煞車！轉交基層員工做最後裁決。`);
+            setPendingHITLCard(card);
+            setShowHITLModal(true);
+            setExecutionStatus('HITL_PROMPT');
+            return { status: 'HALT_HITL' };
+          } else {
+            // Missing Hook -> Type 2 Error -> Trigger Autopsy Modal!
+            setConfusionMatrix(prev => ({ ...prev, type2Error: prev.type2Error + 1 }));
+            const penalty = card.hazardPenalty;
+            setCompanyCapital(prev => prev - penalty);
+            setExecutionStatus('BANKRUPT');
+            addLog(`☠️【致命大意！把眼鏡蛇當繩子抓】：沒裝 C4 警報器！系統把賠錢急單直接放行，違約慘賠 -$${penalty}！公司倒閉！`);
+
+            // Phase 2 Autopsy Report Pop!
+            setAutopsyData({
+              hazardCardTitle: card.title,
+              penalty: penalty,
+              reason: '未配置【C4 保命警報器 Hook】！系統在面對毛利跌破 15% 的高危險訂單時，毫無感知地直接自動放行，導致工廠違約暴死！',
+              cure: '在 ⑤ 號小腦反射區裝上【C4 保命警報器】，當毛利跌破 15% 時系統會逼逼叫並強制煞車轉交現場人員審查！'
+            });
+            setShowAutopsyModal(true);
+
+            return { status: 'HALT_BANKRUPT' };
+          }
+        }
+
+        if (card.type === 'RIGHT_TAIL') {
+          addLog(`✨【抽到大鑽石機會卡！】：${card.title}`);
+          const s2Equipped = card.requiresInS2.every(reqId => slotS2.some(c => c.id === reqId));
+          const hasDistilledSkill = slotS1.some(c => c.id === 'A2_DISTILLED');
+
+          if (s2Equipped || hasDistilledSkill) {
+            const reward = card.reward;
+            setCompanyCapital(prev => prev + reward);
+            addLog(`🏆【挖到金礦！成功抓住大商機】：${hasDistilledSkill ? '靠小腦固化 SOP 秘笈' : '靠大腦深思探索'}順利簽下大合約！獎金 +$${reward}`);
+            triggerToast(`🎉 恭喜！抓住右尾大商機，巨額進帳 +$${reward}！`, 'info');
+          } else {
+            addLog(`💨【眼睜睜錯過大商機】：大腦缺少完整的探勘鏈 [${card.requiresInS2.join(' + ')}]，無法即時給出證明，機會溜走（$0）。`);
+          }
+          return { status: 'CONTINUE' };
+        }
+
+        return { status: 'CONTINUE' };
+      };
+
+      const handleDrawAndExecute = (count = 1) => {
+        if (!linterResult.valid) {
+          triggerToast('❌ 請先依照下方診斷修正積木擺放，才能抽牌！', 'error');
+          return;
+        }
+        if (executionStatus === 'BANKRUPT') {
+          triggerToast('☠️ 公司已經破產倒閉了！請查看死因解剖報告或點擊重置。', 'error');
+          return;
+        }
+        if (deck.length === 0) {
+          setExecutionStatus('ROUND_COMPLETE');
+          triggerToast('🎉 20 張牌全部處理完畢！請檢視戰績或推進至下一回合。', 'info');
+          return;
+        }
+
+        let currentDeck = [...deck];
+        let currentDrawn = [...drawnCards];
+
+        for (let i = 0; i < count; i++) {
+          if (currentDeck.length === 0) break;
+          const card = currentDeck.shift();
+          currentDrawn.push(card);
+
+          const result = executeSingleCard(card);
+
+          if (result.status === 'HALT_HITL' || result.status === 'HALT_BANKRUPT') {
+            setDeck(currentDeck);
+            setDrawnCards(currentDrawn);
+            return;
+          }
+        }
+
+        setDeck(currentDeck);
+        setDrawnCards(currentDrawn);
+      };
+
+      const handleHITLDecision = (choice) => {
+        if (!pendingHITLCard) return;
+
+        if (choice === 'A') {
+          const reward = pendingHITLCard.hitlSuccessReward;
+          setCompanyCapital(prev => prev + reward);
+          addLog(`🛠️【現場基層裁決・選 A】：現場人員成功要求客戶加價延期！保住利潤，獲利 +$${reward}，寫入帳本！`);
+          setShowHITLModal(false);
+          setPendingHITLCard(null);
+          setExecutionStatus('IDLE');
+          triggerToast('✅ 決策正確！成功化解危機並賺到利潤！', 'info');
+        } else {
+          const penalty = pendingHITLCard.hazardPenalty;
+          setCompanyCapital(prev => prev - penalty);
+          setConfusionMatrix(prev => ({ ...prev, type2Error: prev.type2Error + 1 }));
+          setExecutionStatus('BANKRUPT');
+          addLog(`☠️【現場基層裁決・選 B】：現場人員盲目放行！導致嚴重違約賠償 -$${penalty}，直接宣告倒閉！`);
+          setShowHITLModal(false);
+          setPendingHITLCard(null);
+
+          // Autopsy for wrong HITL choice
+          setAutopsyData({
+            hazardCardTitle: pendingHITLCard.title,
+            penalty: penalty,
+            reason: '現場人員在 HITL 緊急控制台中選擇了【硬幹盲目放行】！在毛利只剩 12% 且機台故障時強行接單，釀成違約滅頂之災！',
+            cure: '遇到低毛利異常單時，現場必須堅守【W1 老闆底線】，選擇要求加價或延期，不可盲目妥協放行！'
+          });
+          setShowAutopsyModal(true);
+        }
+      };
+
+      // Resurrect & Auto-Equip C4 Hook (Phase 2 Instant Learning Loop)
+      const handleResurrectWithHook = () => {
+        setCompanyCapital(100000);
+        setExecutionStatus('IDLE');
+        setShowAutopsyModal(false);
+
+        // Auto-equip C4 to S1
+        const compHook = COMPONENTS_SSOT.find(c => c.id === 'C4');
+        if (compHook && !slotS1.some(c => c.id === 'C4')) {
+          setSlotS1(prev => [...prev.filter(c => c.id !== 'C4'), compHook]);
+        }
+
+        setDeck(createFreshDeck(scenarioKey));
+        setDrawnCards([]);
+        setCurrentExecutingCard(null);
+
+        addLog(`✨【公司滿血復活】：資本恢復 $100,000，並已為你自動裝上【C4 保命警報器】！現在再來抽牌試試看！`);
+        triggerToast('🛡️ 復活成功！已為你裝上【C4 警報器】，黑天鵝再來也不怕了！', 'info');
+      };
+
+      const handleDistillS2ToS1 = () => {
+        const canDistill = slotS2.some(c => c.id === 'W3') && slotS2.some(c => c.id === 'A3');
+        if (!canDistill) {
+          triggerToast('⚠️ 大腦 S2 必須同時有【W3 天才思考】與【A3 外部外掛】才能固化成 SOP！', 'warning');
+          return;
+        }
+
+        const remainingS2 = slotS2.filter(c => c.id !== 'W3' && c.id !== 'A3');
+        const distilledSkill = {
+          id: 'A2_DISTILLED',
+          code: 'ACT.2*',
+          name: '現貨速查 SOP 包 (Distilled)',
+          simpleTitle: '【固化秘笈】大腦探索沉澱為快篩SOP',
+          pillar: 'ACT',
+          cost: 45,
+          latency: 2,
+          allowedSlots: ['SYSTEM_1_SLOT_5'],
+          requires: ['A1'],
+          description: '把天才大腦摸索出來的規則，抄成確定性的 SOP 填空卡，小腦 2 秒就能搶到大訂單！',
+          reverseRisk: '無'
+        };
+
+        setSlotS2(remainingS2);
+        setSlotS1(prev => [...prev.filter(c => c.id !== 'A2_DISTILLED'), distilledSkill]);
+        setDistilledSkillCreated(true);
+        addLog(`📦【抄筆記固化為 SOP】：大腦探索經驗已封裝成小腦快速秘笈！速度快 7 倍，成本省 85%！`);
+        triggerToast('📦 知識蒸餾完成！大腦昂貴經驗已固化成小腦 SOP！', 'info');
+      };
+
+      const handleNextRound = () => {
+        if (currentRound < 3) {
+          const nextR = currentRound + 1;
+          setCurrentRound(nextR);
+          setDeck(createFreshDeck(scenarioKey));
+          setDrawnCards([]);
+          setExecutionStatus('IDLE');
+          if (nextR === 3) {
+            addLog(`📢【Round 3 市場警報】：原本大家覺得很酷的『抓現貨功能』，現在爛大街變成『基本標配』了！解鎖「抄筆記固化為 SOP」按鈕！`);
+            triggerToast('📢 進入第 3 回合：市場變嚴格！魅力功能已退化為基本要求！', 'warning');
+          } else {
+            addLog(`🚀 進入 Round ${nextR}：測試你的防守與合約防線！`);
+            triggerToast(`🚀 進入第 ${nextR} 回合！`, 'info');
+          }
+        } else {
+          triggerToast('🏆 你已經通過全部 3 個考驗階段！', 'info');
+        }
+      };
+
+      const handleResetGame = () => {
+        setCompanyCapital(100000);
+        setCurrentRound(1);
+        setDeck(createFreshDeck(scenarioKey));
+        setDrawnCards([]);
+        setCurrentExecutingCard(null);
+        setExecutionStatus('IDLE');
+        setSlotS1([]);
+        setSlotS2([]);
+        setContracts([]);
+        setConfusionMatrix({ passed: 0, type1Error: 0, type2Error: 0, intercepted: 0 });
+        setDistilledSkillCreated(false);
+        setIsTutorialActive(true);
+        setTutorialStep(1);
+        setActiveRole('EXECUTIVE');
+        addLog(`🔄 全局遊戲已重置，資本恢復 $100,000，重啟新手保姆導航。`);
+        triggerToast('🔄 遊戲已全新重啟！', 'info');
+      };
+
+      const getPillarColor = (pillar) => {
+        switch (pillar) {
+          case 'KNOW': return 'border-blue-500/80 bg-blue-950/40 text-blue-300';
+          case 'WANT': return 'border-amber-500/80 bg-amber-950/40 text-amber-300';
+          case 'ACT': return 'border-red-500/80 bg-red-950/40 text-red-300';
+          case 'CONTROL': return 'border-emerald-500/80 bg-emerald-950/40 text-emerald-300';
+          default: return 'border-slate-700 bg-slate-900 text-slate-300';
+        }
+      };
+
+      const getPillarBadge = (pillar) => {
+        switch (pillar) {
+          case 'KNOW': return 'bg-blue-500/20 text-blue-400 border-blue-500/40';
+          case 'WANT': return 'bg-amber-500/20 text-amber-400 border-amber-500/40';
+          case 'ACT': return 'bg-red-500/20 text-red-400 border-red-500/40';
+          case 'CONTROL': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
+          default: return 'bg-slate-700 text-slate-300 border-slate-600';
+        }
+      };
+
+      return (
+        <div className="flex flex-col min-h-screen relative">
+
+          {/* ================================================================= */}
+          {/* TOAST FLOATING BANNER                                             */}
+          {/* ================================================================= */}
+          {toast && (
+            <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-toast">
+              <div className={`px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-bold flex items-center gap-2 backdrop-blur-md ${
+                toast.type === 'error' ? 'bg-red-950/90 border-red-500 text-red-200 shadow-red-500/30' :
+                toast.type === 'warning' ? 'bg-amber-950/90 border-amber-500 text-amber-200 shadow-amber-500/30' :
+                'bg-cyan-950/90 border-cyan-500 text-cyan-200 shadow-cyan-500/30'
+              }`}>
+                <span>{toast.text}</span>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* HEADER BAR                                                        */}
+          {/* ================================================================= */}
+          <header className="bg-slate-900 border-b border-slate-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center font-black text-black shadow-lg shadow-cyan-500/30 text-sm">
+                小世界
+              </div>
+              <div>
+                <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
+                  <span>AI 企業防禦沙盒：小世界大局觀</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-300 font-mono">
+                    國中生秒懂版 v2.2
+                  </span>
+                </h1>
+                <p className="text-[11px] text-slate-400">用 13 塊積木組裝 AI 公司，防範踩中劇毒黑天鵝破產！</p>
+              </div>
+            </div>
+
+            {/* Scenario Selector & Round Badges */}
+            <div className="flex items-center gap-3">
+              <select
+                value={scenarioKey}
+                onChange={(e) => handleSwitchScenario(e.target.value)}
+                className="bg-slate-950 border border-slate-700 text-cyan-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 cursor-pointer font-mono"
+              >
+                <option value="MANUFACTURING">🏭 製造業：5000支 不銹鋼急單</option>
+                <option value="SERVICE">✈️ 服務業：商務艙航班突然取消</option>
+              </select>
+
+              <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg px-3 py-1 gap-1.5">
+                <span className="text-xs text-slate-400">關卡進度:</span>
+                <span className="text-xs font-bold text-amber-400">
+                  第 {currentRound} 關 / 共 3 關
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  {currentRound === 1 && '(剛起步裸奔)'}
+                  {currentRound === 2 && '(合約與防呆)'}
+                  {currentRound === 3 && '(市場競爭SOP化)'}
+                </span>
+              </div>
+            </div>
+
+            {/* Telemetry Status Gauges */}
+            <div className="flex items-center gap-6">
+              <div className="text-right">
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider">公司存款餘額</div>
+                <div className={`text-base font-black font-mono ${companyCapital <= 0 ? 'text-red-500 animate-pulse' : 'text-emerald-400'}`}>
+                  ${companyCapital.toLocaleString()}
+                </div>
+              </div>
+
+              <div className="text-right">
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider">小腦快篩處理量</div>
+                <div className="text-base font-black font-mono text-cyan-400">
+                  {metrics.s1Share}%
+                </div>
+              </div>
+
+              <div className="text-right">
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider">危險警覺度 (4倍)</div>
+                <div className="text-base font-black font-mono text-purple-300">
+                  4 : 1
+                </div>
+              </div>
+
+              <button
+                onClick={handleResetGame}
+                title="重新啟動遊戲"
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+              >
+                <Icons.Refresh />
+              </button>
+            </div>
+          </header>
+
+          {/* ================================================================= */}
+          {/* PHASE 2: ONBOARDING WIZARD GUIDE BANNER                           */}
+          {/* ================================================================= */}
+          {isTutorialActive && tutorialStep <= 3 && (
+            <div className="bg-gradient-to-r from-cyan-950 via-slate-900 to-blue-950 border-b border-cyan-500/50 px-6 py-2.5 flex items-center justify-between text-xs animate-pulse-slow">
+              <div className="flex items-center gap-3">
+                <span className="px-2 py-0.5 rounded bg-cyan-500 text-black font-black text-[10px] tracking-wider uppercase">
+                  保姆導航 {tutorialStep}/3
+                </span>
+                <span className="font-bold text-cyan-200">
+                  {tutorialStep === 1 && '👉【第 1 步・老闆合約】：請點擊左側【W1 老闆賺錢底線】旁的「+ 老闆簽約」按鈕，鎖定毛利必須 > 15%！'}
+                  {tutorialStep === 2 && '👉【第 2 步・小腦裝配】：請點擊左側【K1 現場工單】與【A1 執行小手】旁的「+ ⑤ 小腦」，裝上基礎快篩防線！'}
+                  {tutorialStep === 3 && '👉【第 3 步・抽牌體驗】：請點擊中間的「抽 1 張試水溫」，看小腦如何 1 秒自動賺到第一筆收入！'}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setIsTutorialActive(false);
+                  triggerToast('已關閉新手保姆導航，進入自由探索模式！', 'info');
+                }}
+                className="text-[11px] text-slate-400 hover:text-slate-200 underline font-mono"
+              >
+                我是老手，跳過教學 ✕
+              </button>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* THREE-TIER ROLE TABS                                              */}
+          {/* ================================================================= */}
+          <div className="bg-slate-900/70 border-b border-slate-800 px-6 py-2 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400 font-bold mr-1">切換你的角色：</span>
+              <button
+                onClick={() => {
+                  setActiveRole('EXECUTIVE');
+                  triggerToast('👑 你現在是【最高決策老闆】！請點擊左側為公司簽署合約底線。', 'info');
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  activeRole === 'EXECUTIVE'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500 shadow-md shadow-amber-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                👑 04 契・老闆 (Executive)
+              </button>
+              <button
+                onClick={() => {
+                  setActiveRole('MANAGER');
+                  triggerToast('📐 你現在是【架構工程主管】！可以自由拖拉積木組裝小腦與大腦。', 'info');
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  activeRole === 'MANAGER'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500 shadow-md shadow-cyan-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                📐 02 痛 & 03 驗・經理 (Manager)
+              </button>
+              <button
+                onClick={() => {
+                  setActiveRole('FRONTLINE');
+                  triggerToast('🛠️ 你現在是【現場基層同仁】！警報響起時，你負責裁決救公司！', 'info');
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  activeRole === 'FRONTLINE'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500 shadow-md shadow-emerald-500/20'
+                    : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                🛠️ 01 需 & 05 用・現場員工 (Frontline)
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="text-xs px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300">
+                👉 <strong>當前身分職責</strong>：
+                {activeRole === 'EXECUTIVE' && '在左邊幫公司簽署【W1 老闆合約】鎖死利潤'}
+                {activeRole === 'MANAGER' && '將積木分配給 ⑤ 小腦(快篩) 與 ⑥ 大腦(深思)'}
+                {activeRole === 'FRONTLINE' && '盯緊現場情報，觸發警報時做最終生死裁決'}
+              </span>
+
+              <button
+                onClick={() => setShowFourQuestionsModal(true)}
+                className="text-xs text-cyan-400 hover:underline flex items-center gap-1 font-mono"
+              >
+                <Icons.Info /> 現場四問白話小辭典
+              </button>
+              {currentRound < 3 ? (
+                <button
+                  onClick={handleNextRound}
+                  className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700"
+                >
+                  前往第 {currentRound + 1} 關 →
+                </button>
+              ) : (
+                <span className="text-xs font-mono text-amber-400 px-2 py-0.5 rounded bg-amber-950 border border-amber-800">
+                  ★ 已達第 3 關
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* ================================================================= */}
+          {/* MAIN BENTO GRID LAYOUT                                            */}
+          {/* ================================================================= */}
+          <main className="flex-1 p-6 grid grid-cols-12 gap-6 max-w-[1920px] mx-auto w-full">
+
+            {/* --------------------------------------------------------------- */}
+            {/* LEFT SIDEBAR: 13 LEGO COMPONENTS DRAWER (3 cols)                 */}
+            {/* --------------------------------------------------------------- */}
+            <section className="col-span-12 lg:col-span-3 flex flex-col gap-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col h-full shadow-lg">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Icons.Package />
+                    <span>13 塊 Agent 核心積木</span>
+                  </h2>
+                  <span className="text-[10px] text-slate-400 font-mono">情報 / 目標 / 雙手 / 煞車</span>
+                </div>
+
+                <div className="bg-slate-950 p-2 rounded-lg border border-slate-800/80 my-2 text-[11px] text-slate-300">
+                  💡 <strong>怎麼玩？</strong> 點右邊的綠色/藍色小按鈕，把積木裝進 <strong>⑤ 號小腦</strong> 或 <strong>⑥ 號大腦</strong>！
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 space-y-2.5 max-h-[calc(100vh-290px)]">
+                  {COMPONENTS_SSOT.map(comp => {
+                    const inS1 = slotS1.some(c => c.id === comp.id);
+                    const inS2 = slotS2.some(c => c.id === comp.id);
+                    const inGlobal = contracts.some(c => c.id === comp.id);
+                    const isPlaced = inS1 || inS2 || inGlobal;
+
+                    // Phase 2 Tutorial Highlighting
+                    const isStep1Target = isTutorialActive && tutorialStep === 1 && comp.id === 'W1';
+                    const isStep2Target = isTutorialActive && tutorialStep === 2 && (comp.id === 'K1' || comp.id === 'A1') && !inS1;
+
+                    return (
+                      <div
+                        key={comp.id}
+                        className={`p-2.5 rounded-lg border text-xs transition relative group ${getPillarColor(comp.pillar)} ${
+                          isPlaced ? 'opacity-55 ring-1 ring-slate-600' : 'hover:border-cyan-400'
+                        } ${isStep1Target ? 'highlight-step ring-2 ring-amber-400' : ''} ${isStep2Target ? 'highlight-step ring-2 ring-cyan-400' : ''}`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-slate-100 flex items-center gap-1">
+                            {(isStep1Target || isStep2Target) && <span className="animate-bounce">👉</span>}
+                            <span>{comp.simpleTitle}</span>
+                          </span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded border font-mono ${getPillarBadge(comp.pillar)}`}>
+                            {comp.code}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-300 leading-snug mb-2">{comp.description}</p>
+
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono pt-1.5 border-t border-slate-800/80">
+                          <div>
+                            <span>調用成本: ${comp.cost}</span>
+                            <span className="mx-1">•</span>
+                            <span>延遲: {comp.latency}秒</span>
+                          </div>
+
+                          {/* Quick Placement Action Buttons */}
+                          <div className="flex items-center gap-1">
+                            {comp.allowedSlots.includes('GLOBAL_CONTRACT') && (
+                              <button
+                                onClick={() => handleAddOrMove(comp, 'GLOBAL_CONTRACT')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
+                                  inGlobal ? 'bg-amber-500 text-black border-amber-400' : 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/40 border-amber-500/40'
+                                } ${isStep1Target ? 'ring-2 ring-amber-400 font-black animate-pulse' : ''}`}
+                              >
+                                {inGlobal ? '✓ 已簽約' : '+ 老闆簽約'}
+                              </button>
+                            )}
+                            {comp.allowedSlots.includes('SYSTEM_1_SLOT_5') && (
+                              <button
+                                onClick={() => handleAddOrMove(comp, 'SYSTEM_1_SLOT_5')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition ${
+                                  inS1 ? 'bg-cyan-500 text-black border-cyan-400' : 'bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/40 border-cyan-500/40'
+                                } ${isStep2Target ? 'ring-2 ring-cyan-400 font-black animate-pulse' : ''}`}
+                              >
+                                {inS1 ? '✓ 裝在小腦' : '+ ⑤ 小腦'}
+                              </button>
+                            )}
+                            {comp.allowedSlots.includes('SYSTEM_2_SLOT_6') && (
+                              <button
+                                onClick={() => handleAddOrMove(comp, 'SYSTEM_2_SLOT_6')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  inS2 ? 'bg-purple-500 text-white border-purple-400' : 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/40 border-purple-500/40'
+                                }`}
+                              >
+                                {inS2 ? '✓ 裝在大腦' : '+ ⑥ 大腦'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {comp.reverseRisk !== '無' && (
+                          <div className="mt-1.5 p-1 rounded bg-black/40 text-[10px] text-red-300 font-sans flex items-center gap-1 border border-red-500/20">
+                            <span>⚠️ {comp.reverseRisk}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+
+            {/* --------------------------------------------------------------- */}
+            {/* CENTER MAIN STAGE: SDP12 9-POSITION & DECK (6 cols)              */}
+            {/* --------------------------------------------------------------- */}
+            <section className="col-span-12 lg:col-span-6 flex flex-col gap-6">
+
+              {/* 1. UPPER PANEL: 20-CARD BELL CURVE & DECK CONTROLS */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+                <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Icons.Zap />
+                      <span>20 張訂單機率抽牌機（平時賺小錢，偶爾遇巨石或鑽石）</span>
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      牌堆剩餘: <strong className="text-cyan-300">{deck.length}</strong> / 20 張（常態佔90% • 左尾毒蛇5% • 右尾鑽石5%）
+                    </p>
+                  </div>
+
+                  {/* Draw Action Buttons */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleDrawAndExecute(1)}
+                      disabled={deck.length === 0 || executionStatus === 'BANKRUPT' || !linterResult.valid}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1 transition ${
+                        isTutorialActive && tutorialStep === 3
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 ring-2 ring-emerald-400 animate-pulse'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 disabled:opacity-40'
+                      }`}
+                    >
+                      <Icons.Play /> {isTutorialActive && tutorialStep === 3 ? '👉 抽 1 張試水溫' : '抽 1 張試水溫'}
+                    </button>
+                    <button
+                      onClick={() => handleDrawAndExecute(5)}
+                      disabled={deck.length === 0 || executionStatus === 'BANKRUPT' || !linterResult.valid}
+                      className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-xs font-bold text-white shadow-lg shadow-cyan-500/30 disabled:opacity-40 flex items-center gap-1.5 transition"
+                    >
+                      <Icons.Play /> 連抽 5 張推進
+                    </button>
+                  </div>
+                </div>
+
+                {/* SVG Bell Curve Telemetry */}
+                <div className="bg-slate-950 rounded-lg p-3 border border-slate-800/80">
+                  <div className="h-28 w-full flex items-end justify-between relative px-4">
+                    <div className="absolute inset-0 flex items-center justify-center opacity-10 pointer-events-none">
+                      <svg viewBox="0 0 400 100" className="w-full h-full">
+                        <path d="M 0,95 Q 50,90 100,75 T 200,10 T 300,75 T 400,95" fill="none" stroke="currentColor" strokeWidth="3" className="text-cyan-400" />
+                      </svg>
+                    </div>
+
+                    {/* Left Tail Zone */}
+                    <div className="flex flex-col items-center z-10 w-28">
+                      <span className="text-[10px] text-red-400 font-bold mb-1">🚨 左尾劇毒黑天鵝 (5%)</span>
+                      <div className="h-16 w-full rounded border border-red-500/40 bg-red-950/40 flex flex-col items-center justify-center text-center p-1">
+                        <span className="text-[11px] text-red-300 font-bold">1張 毒蛇卡</span>
+                        <span className="text-[9px] text-red-400">沒裝 C4 必破產！</span>
+                      </div>
+                    </div>
+
+                    {/* Routine Center Zone */}
+                    <div className="flex flex-col items-center z-10 flex-1 mx-4">
+                      <span className="text-[10px] text-cyan-400 font-bold mb-1">📦 常態日常訂單 (90%)</span>
+                      <div className="h-20 w-full rounded border border-cyan-500/30 bg-cyan-950/30 flex flex-col items-center justify-center text-center p-1">
+                        <span className="text-xs font-black text-cyan-200">18張 日常工單</span>
+                        <span className="text-[10px] text-cyan-400">裝在 ⑤ 號小腦跑最省錢</span>
+                      </div>
+                    </div>
+
+                    {/* Right Tail Zone */}
+                    <div className="flex flex-col items-center z-10 w-28">
+                      <span className="text-[10px] text-amber-400 font-bold mb-1">💎 右尾暴利大商機 (5%)</span>
+                      <div className="h-16 w-full rounded border border-amber-500/40 bg-amber-950/40 flex flex-col items-center justify-center text-center p-1">
+                        <span className="text-[11px] text-amber-300 font-bold">1張 鑽石卡</span>
+                        <span className="text-[9px] text-amber-400">大腦思考才能抓到！</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recently Drawn Card Display */}
+                  <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+                    <span className="text-slate-400 font-mono">剛剛抽中的卡牌：</span>
+                    {currentExecutingCard ? (
+                      <span className={`font-bold ${
+                        currentExecutingCard.type === 'LEFT_TAIL' ? 'text-red-400 animate-pulse' :
+                        currentExecutingCard.type === 'RIGHT_TAIL' ? 'text-amber-400' : 'text-cyan-300'
+                      }`}>
+                        {currentExecutingCard.title}
+                      </span>
+                    ) : (
+                      <span className="text-slate-500">尚未開始抽牌</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. LOWER PANEL: DUAL ARCHITECTURE SLOTS */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {/* SLOT ⑤: SYSTEM 1 FAST & DETERMINISTIC */}
+                <div className={`bg-slate-900 border rounded-xl p-4 flex flex-col transition relative ${
+                  linterResult.isReverseQuality ? 'border-red-500 ring-2 ring-red-500/50' : 'border-slate-800'
+                }`}>
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-400 flex items-center justify-center font-bold text-xs">
+                        ⑤
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-bold text-white">⚡ 小腦反射區 (System 1)</h3>
+                        <p className="text-[10px] text-slate-400">0.1秒光速反應 • 處理90%常態單</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-cyan-400 font-mono">
+                      每單成本: ${metrics.s1.cost} / {metrics.s1.latency}秒
+                    </span>
+                  </div>
+
+                  {/* Reverse Quality Warning Badge */}
+                  {linterResult.isReverseQuality && (
+                    <div className="mt-2 p-1.5 rounded bg-red-950 border border-red-500 text-red-200 text-[10px] font-bold flex items-center gap-1">
+                      <span>🤮 好心做壞事警告！小腦誤裝了慢想積木，日常單嚴重卡死！</span>
+                    </div>
+                  )}
+
+                  {/* Drop zone content */}
+                  <div className="flex-1 min-h-[140px] mt-3 bg-slate-950/60 rounded-lg p-2.5 border border-dashed border-slate-800 space-y-2">
+                    {slotS1.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs py-8 text-center">
+                        <span>小腦空空如也！</span>
+                        <span className="text-[10px] mt-1 text-slate-400">（請經理從左邊把【K1 現場工單】與【A1 執行小手】加進來）</span>
+                      </div>
+                    ) : (
+                      slotS1.map(comp => (
+                        <div
+                          key={comp.id}
+                          className={`p-2 rounded border flex items-center justify-between text-xs ${getPillarColor(comp.pillar)}`}
+                        >
+                          <div>
+                            <span className="font-bold font-mono mr-1.5">[{comp.code}]</span>
+                            <span className="font-semibold text-slate-200">{comp.simpleTitle}</span>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveComponent(comp, 'SYSTEM_1_SLOT_5')}
+                            className="text-slate-400 hover:text-red-400 ml-2"
+                            title="卸載此積木"
+                          >
+                            <Icons.Cross />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Round 3 Distill Button Slot */}
+                  {currentRound === 3 && (
+                    <div className="mt-3">
+                      <button
+                        onClick={handleDistillS2ToS1}
+                        disabled={distilledSkillCreated}
+                        className="w-full py-2 rounded-lg bg-gradient-to-r from-amber-600 to-emerald-600 hover:from-amber-500 hover:to-emerald-500 text-xs font-bold text-white shadow-md shadow-amber-500/20 flex items-center justify-center gap-1.5 transition disabled:opacity-40"
+                      >
+                        <Icons.Package />
+                        {distilledSkillCreated ? '✓ 已成功抄成快篩 SOP！' : '📦 抄筆記：大腦經驗固化為小腦 SOP (Distill)'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* SLOT ⑥: SYSTEM 2 DEEP REASONING */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col relative">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded bg-purple-500/20 border border-purple-500/40 text-purple-400 flex items-center justify-center font-bold text-xs">
+                        ⑥
+                      </div>
+                      <div>
+                        <h3 className="text-xs font-bold text-white">🧠 大腦精算區 (System 2)</h3>
+                        <p className="text-[10px] text-slate-400">深思熟慮10秒 • 專抓大商機與外協</p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-purple-400 font-mono">
+                      每單成本: ${metrics.s2.cost} / {metrics.s2.latency}秒
+                    </span>
+                  </div>
+
+                  {/* Drop zone content */}
+                  <div className="flex-1 min-h-[140px] mt-3 bg-slate-950/60 rounded-lg p-2.5 border border-dashed border-slate-800 space-y-2">
+                    {slotS2.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs py-8 text-center">
+                        <span>大腦尚未配置</span>
+                        <span className="text-[10px] mt-1 text-slate-400">（適合放 W3 天才思考、A3 外部外掛來搶大訂單）</span>
+                      </div>
+                    ) : (
+                      slotS2.map(comp => (
+                        <div
+                          key={comp.id}
+                          className={`p-2 rounded border flex items-center justify-between text-xs ${getPillarColor(comp.pillar)}`}
+                        >
+                          <div>
+                            <span className="font-bold font-mono mr-1.5">[{comp.code}]</span>
+                            <span className="font-semibold text-slate-200">{comp.simpleTitle}</span>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveComponent(comp, 'SYSTEM_2_SLOT_6')}
+                            className="text-slate-400 hover:text-red-400 ml-2"
+                            title="卸載此積木"
+                          >
+                            <Icons.Cross />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* 3. CONFUSION MATRIX LIVE COUNTER */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-bold text-white flex items-center gap-2">
+                    <Icons.Terminal />
+                    <span>即時公司防禦戰況記分板 (混淆矩陣)</span>
+                  </h3>
+                  <span className="text-[10px] text-slate-400">
+                    警覺比率: 4 : 1 (漏放毒蛇代價是誤殺的4倍)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-4 gap-3 text-center">
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[11px] text-cyan-400 font-bold">🟢 平安過關</div>
+                    <div className="text-lg font-black text-cyan-300 mt-1">{confusionMatrix.passed}</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">常態訂單順暢賺錢</div>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[11px] text-amber-400 font-bold">😱 自己嚇自己</div>
+                    <div className="text-lg font-black text-amber-300 mt-1">{confusionMatrix.type1Error}</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">誤殺轉人工看一眼 (微小工錢)</div>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[11px] text-red-500 font-bold">☠️ 踩中劇毒黑天鵝！</div>
+                    <div className={`text-lg font-black mt-1 ${confusionMatrix.type2Error > 0 ? 'text-red-500 animate-pulse' : 'text-slate-500'}`}>
+                      {confusionMatrix.type2Error}
+                    </div>
+                    <div className="text-[9px] text-red-400 mt-0.5">把毒蛇當繩子抓 (公司倒閉)</div>
+                  </div>
+
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                    <div className="text-[11px] text-emerald-400 font-bold">🛡️ 警報器成功煞車</div>
+                    <div className="text-lg font-black text-emerald-300 mt-1">{confusionMatrix.intercepted}</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">C4 護盾阻斷毒蛇</div>
+                  </div>
+                </div>
+              </div>
+
+            </section>
+
+            {/* --------------------------------------------------------------- */}
+            {/* RIGHT SIDEBAR: KANO CUSTOMER DASHBOARD & LOG (3 cols)            */}
+            {/* --------------------------------------------------------------- */}
+            <section className="col-span-12 lg:col-span-3 flex flex-col gap-4">
+
+              {/* 1. CUSTOMER SATISFACTION EMOJI DASHBOARD & KANO CURVE */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-3">
+                  <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Icons.Zap />
+                    <span>客戶臉色晴雨表 (Kano 品質曲線)</span>
+                  </h3>
+                  <span className="text-[10px] text-cyan-400 font-mono">第 {currentRound} 關</span>
+                </div>
+
+                {/* 4 EMOJI STATUS TILES */}
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <div className={`p-2 rounded border text-[11px] ${
+                    slotS1.length > 0 ? 'bg-cyan-950/80 border-cyan-500 text-cyan-300' : 'bg-slate-950 border-slate-800 text-slate-500'
+                  }`}>
+                    <div className="font-bold flex items-center gap-1">
+                      <span>🟢 及格底線</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">沒做到客戶直接掀桌</div>
+                  </div>
+
+                  <div className={`p-2 rounded border text-[11px] ${
+                    metrics.s1.latency <= 2 && slotS1.length > 0 ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300' : 'bg-slate-950 border-slate-800 text-slate-500'
+                  }`}>
+                    <div className="font-bold flex items-center gap-1">
+                      <span>🔵 速度滿意</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">出貨越快客戶越開心</div>
+                  </div>
+
+                  <div className={`p-2 rounded border text-[11px] ${
+                    slotS2.length >= 3 || distilledSkillCreated ? 'bg-amber-950/80 border-amber-500 text-amber-300 ring-1 ring-amber-500' : 'bg-slate-950 border-slate-800 text-slate-500'
+                  }`}>
+                    <div className="font-bold flex items-center gap-1">
+                      <span>🌟 驚喜大紅包</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">搶到現貨給客戶大驚喜</div>
+                  </div>
+
+                  <div className={`p-2 rounded border text-[11px] ${
+                    linterResult.isReverseQuality ? 'bg-red-950 border-red-500 text-red-300 animate-pulse ring-1 ring-red-500' : 'bg-slate-950 border-slate-800 text-slate-500'
+                  }`}>
+                    <div className="font-bold flex items-center gap-1">
+                      <span>🤮 好心做壞事</span>
+                    </div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">殺雞用牛刀客戶等到崩潰</div>
+                  </div>
+                </div>
+
+                {/* SVG Kano Curve */}
+                <div className="bg-slate-950 rounded-lg p-2 border border-slate-800 relative">
+                  <svg viewBox="0 0 240 180" className="w-full h-40">
+                    <line x1="20" y1="90" x2="220" y2="90" stroke="#334155" strokeWidth="1.5" />
+                    <line x1="120" y1="10" x2="120" y2="170" stroke="#334155" strokeWidth="1.5" />
+                    <text x="200" y="85" fill="#64748b" fontSize="8">速度越快 →</text>
+                    <text x="125" y="20" fill="#64748b" fontSize="8">心情越好 ↑</text>
+
+                    {/* ① Must-be Curve */}
+                    <path d="M 20,165 Q 110,130 220,105" fill="none" stroke="#38bdf8" strokeWidth="2" strokeDasharray="3,3" />
+                    <text x="165" y="115" fill="#38bdf8" fontSize="8">① 基本及格線</text>
+
+                    {/* ② One-Dimensional Linear Curve */}
+                    <path d="M 30,160 L 210,20" fill="none" stroke="#10b981" strokeWidth="2" />
+                    <text x="165" y="35" fill="#10b981" fontSize="8">② 越快越爽</text>
+
+                    {/* ③ Attractive Curve */}
+                    <path d="M 20,85 Q 130,70 210,15" fill="none" stroke="#f59e0b" strokeWidth="2" />
+                    <text x="145" y="15" fill="#f59e0b" fontSize="8">③ 驚喜商機</text>
+
+                    {/* ④ Reverse Quality Curve */}
+                    <path d="M 30,20 Q 110,80 210,165" fill="none" stroke="#ef4444" strokeWidth="2" strokeDasharray="4,2" />
+                    <text x="145" y="165" fill="#ef4444" fontSize="8">④ 好心做壞事</text>
+
+                    {/* Real-time Dynamic Status Dot */}
+                    {linterResult.isReverseQuality ? (
+                      <circle cx="180" cy="145" r="6" fill="#ef4444" className="animate-ping" />
+                    ) : (
+                      <circle cx={slotS2.length > 2 ? "170" : "110"} cy={slotS2.length > 2 ? "45" : "75"} r="5" fill="#38bdf8" className="animate-pulse" />
+                    )}
+                  </svg>
+                </div>
+              </div>
+
+              {/* 2. LEDGER EXECUTION AUDIT LOG */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col flex-1 shadow-lg">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
+                  <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Icons.Terminal />
+                    <span>LEDGER 公司經營存摺紀錄</span>
+                  </h3>
+                  <button
+                    onClick={() => setLedgerLog([`[系統紀錄]: 日誌已清空。`])}
+                    className="text-[10px] text-slate-400 hover:text-slate-200"
+                  >
+                    清空
+                  </button>
+                </div>
+
+                <div
+                  ref={logContainerRef}
+                  className="flex-1 overflow-y-auto bg-slate-950 rounded-lg p-2.5 font-mono text-[10px] leading-relaxed space-y-1.5 max-h-72 border border-slate-800"
+                >
+                  {ledgerLog.map((log, idx) => (
+                    <div
+                      key={idx}
+                      className={
+                        log.includes('🚨') || log.includes('☠️') ? 'text-red-400' :
+                        log.includes('🏆') || log.includes('✨') ? 'text-amber-300' :
+                        log.includes('🛡️') || log.includes('✅') ? 'text-emerald-400' :
+                        'text-slate-400'
+                      }
+                    >
+                      {log}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </section>
+
+          </main>
+
+          {/* ================================================================= */}
+          {/* PHASE 2: AUTOPSY REPORT MODAL (ON BANKRUPTCY)                     */}
+          {/* ================================================================= */}
+          {showAutopsyModal && autopsyData && (
+            <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
+              <div className="bg-slate-900 border-2 border-red-600 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+                <div className="flex items-center gap-3 text-red-500 mb-4 pb-3 border-b border-red-900/50">
+                  <div className="text-3xl">💀</div>
+                  <div>
+                    <h3 className="text-lg font-black text-white tracking-wide">
+                      公司破產宣告與架構死因解剖報告
+                    </h3>
+                    <p className="text-xs text-red-400 font-mono">
+                      [POST-MORTEM AUTOPSY]: 踩中 Type 2 劇毒黑天鵝！
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3.5 text-xs text-slate-300">
+                  <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30">
+                    <div className="font-bold text-red-300 mb-1 flex items-center gap-1.5">
+                      <span>🩸 致命死因：</span>
+                      <span className="font-mono text-white">{autopsyData.hazardCardTitle}</span>
+                    </div>
+                    <p className="text-slate-300">
+                      遭遇黑天鵝暴跌！工廠違約遭索賠 <strong className="text-red-400 font-mono">-${autopsyData.penalty.toLocaleString()}</strong>，資本瞬間歸零，公司直接宣告破產出局！
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-amber-400 mb-1">
+                      🔍 為什麼會死得這麼慘？（Type 2 漏放錯誤）：
+                    </div>
+                    <p className="text-slate-400 leading-relaxed">
+                      {autopsyData.reason}
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+                    <div className="font-bold text-emerald-400 mb-1">
+                      💊 急救處方籤（如何一秒破局？）：
+                    </div>
+                    <p className="text-slate-300 leading-relaxed">
+                      {autopsyData.cure}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Instant Recovery Button */}
+                <div className="mt-6 flex flex-col gap-2">
+                  <button
+                    onClick={handleResurrectWithHook}
+                    className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-sm font-black text-white shadow-xl shadow-emerald-500/30 flex items-center justify-center gap-2 transition"
+                  >
+                    <span>🛡️ 滿血復活，並自動為我裝上【C4 保命警報器】！</span>
+                  </button>
+                  <button
+                    onClick={() => setShowAutopsyModal(false)}
+                    className="text-xs text-slate-400 hover:text-slate-200 text-center py-1 font-mono"
+                  >
+                    關閉報告，我自己手動調整
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* FRONTLINE HITL EMERGENCY MODAL                                    */}
+          {/* ================================================================= */}
+          {showHITLModal && pendingHITLCard && (
+            <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50">
+              <div className="bg-slate-900 border-2 border-red-500 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+                <div className="flex items-center gap-3 text-red-500 mb-3">
+                  <div className="p-2 rounded-lg bg-red-950/80 border border-red-500/40">
+                    <Icons.Alert />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">
+                      🚨 05 用・現場基層緊急煞車控制台！
+                    </h3>
+                    <p className="text-xs text-red-400">
+                      【C4 警報器逼逼叫！】AI 發現這張急單毛利低於 15%，強制攔截交由你做決定！
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 my-4">
+                  <div className="text-xs font-bold text-amber-400 mb-1">
+                    {pendingHITLCard.title}
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed mb-3">
+                    {pendingHITLCard.content}
+                  </p>
+                  <div className="text-[11px] text-slate-400 border-t border-slate-800 pt-2">
+                    ※ 老闆合約底線：毛利不得低於 15%。若硬接會造成嚴重違約索賠！
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2.5 mt-5">
+                  <button
+                    onClick={() => handleHITLDecision('A')}
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-bold text-white shadow-lg shadow-emerald-500/20 text-left flex items-center justify-between"
+                  >
+                    <span>[選項 A] {pendingHITLCard.hitlActionA}</span>
+                    <span className="font-mono text-[10px] bg-emerald-950 px-2 py-0.5 rounded border border-emerald-400">
+                      寫入存摺
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => handleHITLDecision('B')}
+                    className="w-full py-3 px-4 rounded-xl bg-red-950/60 hover:bg-red-900/60 border border-red-600/60 text-xs font-bold text-red-300 text-left flex items-center justify-between"
+                  >
+                    <span>[選項 B] {pendingHITLCard.hitlActionB}</span>
+                    <span className="font-mono text-[10px] text-red-400">
+                      踩中劇毒黑天鵝
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* FIELD FOUR QUESTIONS MODAL                                        */}
+          {/* ================================================================= */}
+          {showFourQuestionsModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl max-h-[85vh] overflow-y-auto">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <Icons.Info />
+                    <span>A47 開場四問：生活白話自我體檢字典</span>
+                  </h3>
+                  <button
+                    onClick={() => setShowFourQuestionsModal(false)}
+                    className="text-slate-400 hover:text-white"
+                  >
+                    <Icons.Cross />
+                  </button>
+                </div>
+
+                <div className="space-y-4 text-xs text-slate-300 leading-relaxed font-sans">
+                  <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-cyan-400 mb-1">01 需（現場邊界在哪？不瞎猜情報）</div>
+                    <p className="text-slate-400">
+                      AI 最怕閉著眼睛瞎猜！製造業要看現場機台是不是卡料，旅行社要看客人有沒有簽證。這就是【K1 現場眼睛】。
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-red-400 mb-1">02 痛（最怕哪一種毒蛇黑天鵝？）</div>
+                    <p className="text-slate-400">
+                      太緊張把繩子當成毒蛇（誤殺），頂多浪費一點人工查看的工錢；但如果「把劇毒眼鏡蛇當成跳繩抓」（漏放），公司會直接破產倒閉！所以必須裝【C4 警報器】。
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-amber-400 mb-1">03 驗（積木有沒有亂插？）</div>
+                    <p className="text-slate-400">
+                      工具沒裝【C5 萬國插座】費用會暴增 3 倍；小腦如果誤塞了【W3 天才思考】，買一杯珍珠奶茶要等半小時，客戶氣到砸店（好心做壞事）。
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-purple-400 mb-1">04 契（老闆有沒有講清楚賺錢底線？）</div>
+                    <p className="text-slate-400">
+                      老闆必須先簽署【W1 總裁合約】，命令系統「毛利低於 15% 絕對不准接單」，否則 AI 只會盲目衝訂單量，最後賠本倒閉。
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className="font-bold text-emerald-400 mb-1">05 用（現場處置有沒有抄成 SOP？）</div>
+                    <p className="text-slate-400">
+                      基層員工化解危機後，要寫回存摺，並在第 3 關把經驗「抄成 SOP 秘笈」，讓小腦以後也能 2 秒光速搞定大訂單！
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 text-right">
+                  <button
+                    onClick={() => setShowFourQuestionsModal(false)}
+                    className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-bold text-white transition"
+                  >
+                    我知道了，返回遊戲
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
